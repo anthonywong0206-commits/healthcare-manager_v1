@@ -53,6 +53,7 @@ function useLocalStorage(key, initialValue) {
 
 const todayKey = () => new Date().toISOString().slice(0, 10)
 const nowTime = () => new Date().toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit' })
+const timeInputValue = () => new Date().toTimeString().slice(0, 5)
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 function App() {
@@ -74,13 +75,8 @@ function App() {
     notify('已成功儲存健康紀錄')
   }
 
-  const markTaken = (medId) => {
-    const existing = logs.find(l => l.medicationId === medId && l.date === todayKey())
-    if (existing) {
-      setLogs(logs.map(l => l.id === existing.id ? { ...l, taken: true, takenTime: nowTime() } : l))
-    } else {
-      setLogs([{ id: uid(), medicationId: medId, taken: true, takenTime: nowTime(), date: todayKey() }, ...logs])
-    }
+  const markTaken = (medId, customTime = nowTime()) => {
+    setLogs(prev => [{ id: uid(), medicationId: medId, taken: true, takenTime: customTime || nowTime(), date: todayKey() }, ...prev])
     notify('已記錄服藥時間')
   }
 
@@ -285,33 +281,171 @@ function InputPage({ addRecord }) {
   </section>
 }
 
+function getDoseCount(frequency) {
+  const text = String(frequency || '').trim()
+  const chineseMap = { 一:1, 壹:1, 二:2, 兩:2, 貳:2, 三:3, 叁:3, 四:4, 五:5, 六:6 }
+  const digit = text.match(/\d+/)
+  if (digit) return Math.max(1, Number(digit[0]))
+  for (const [k, v] of Object.entries(chineseMap)) {
+    if (text.includes(k)) return v
+  }
+  return 1
+}
+
+function buildLocalDrugExplanation(name) {
+  const translated = translateDrugName(name)
+  const key = String(name || '').trim().toLowerCase()
+  const usage = drugHints[key] || '暫未有本地用途資料，請核對藥袋、處方或向醫生／藥劑師查詢。'
+  return `中文名稱：${translated}\n\n用途：${usage}\n\n注意事項：藥物用途只供參考，實際服藥方法及用途請依照醫生或藥劑師指示。切勿自行停藥、改藥或加減劑量。`
+}
+
 function MedicationPage({ meds, setMeds, logs, markTaken, notify }) {
   const [bulk, setBulk] = useState('')
   const [single, setSingle] = useState({ name:'', dosage:'', frequency:'', time:'', note:'', usageDescription:'' })
-  const todayLogs = logs.filter(l => l.date === todayKey())
+  const [takingId, setTakingId] = useState(null)
+  const [takeTime, setTakeTime] = useState(timeInputValue())
+  const [aiResult, setAiResult] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [openAiKey, setOpenAiKey] = useLocalStorage('openaiApiKey', '')
+  const today = todayKey()
+  const todayLogs = logs.filter(l => l.date === today)
+
+  const getMedLogs = (medId) => todayLogs.filter(l => l.medicationId === medId && l.taken)
+  const isCompleted = (med) => getMedLogs(med.id).length >= getDoseCount(med.frequency)
+  const pendingMeds = meds.filter(m => !isCompleted(m))
+
   const addSingle = () => {
     if (!single.name.trim()) return notify('請先輸入藥物名稱')
-    setMeds([{ id: uid(), ...single }, ...meds]); setSingle({ name:'', dosage:'', frequency:'', time:'', note:'', usageDescription:'' }); notify('已新增藥物')
+    setMeds([{ id: uid(), ...single }, ...meds])
+    setSingle({ name:'', dosage:'', frequency:'', time:'', note:'', usageDescription:'' })
+    notify('已新增藥物')
   }
+
+  const parseBulkRow = (row) => {
+    const normalized = row.replaceAll('｜', '|')
+    let parts = normalized.includes('|') ? normalized.split('|') : normalized.split(/\s+/)
+    parts = parts.map(x => x.trim()).filter(Boolean)
+    const [name='', dosage='', frequency='', time='', ...noteParts] = parts
+    return { id: uid(), name, dosage, frequency, time, note: noteParts.join(' '), usageDescription: '' }
+  }
+
   const addBulk = () => {
-    const rows = bulk.split('\n').map(r => r.trim()).filter(Boolean).map(row => {
-      const [name='', dosage='', time='', note=''] = row.split('｜')
-      return { id: uid(), name, dosage, time, note, frequency: '', usageDescription: '' }
-    })
+    const rows = bulk.split('\n').map(r => r.trim()).filter(Boolean).map(parseBulkRow).filter(x => x.name)
     if (!rows.length) return notify('請先輸入批量藥物')
-    setMeds([...rows, ...meds]); setBulk(''); notify(`已新增 ${rows.length} 款藥物`)
+    setMeds([...rows, ...meds])
+    setBulk('')
+    notify(`已新增 ${rows.length} 款藥物`)
   }
-  const explain = () => {
-    const key = single.name.trim().toLowerCase()
-    const desc = drugHints[key] || '暫未有本地資料。請以藥袋、處方、醫生或藥劑師說明為準。'
-    setSingle({...single, usageDescription: `${desc} 藥物用途只供參考，實際服藥方法及用途請依照醫生或藥劑師指示。`})
+
+  const confirmTaken = (medId) => {
+    const med = meds.find(m => m.id === medId)
+    if (!med || isCompleted(med)) return
+    markTaken(medId, takeTime || nowTime())
+    setTakingId(null)
+    setTakeTime(timeInputValue())
   }
-  return <section className="page fade-in"><h2>藥物管理</h2><div className="notice compact"><ShieldAlert size={20}/><small>{DISCLAIMER}</small></div>
-    <div className="form-card"><h3>批量輸入藥物</h3><textarea value={bulk} onChange={e=>setBulk(e.target.value)} rows="5" placeholder={'每行格式：藥物名稱｜劑量｜服用時間｜備註\n例如：Metformin｜500mg｜早上飯後｜糖尿病用藥'} /><button className="secondary wide" onClick={addBulk}><Plus size={20}/>批量新增</button></div>
+
+  const showTranslation = (med) => {
+    setMeds(meds.map(m => m.id === med.id ? { ...m, usageDescription: buildLocalDrugExplanation(m.name) } : m))
+  }
+
+  const runAiAnalysis = async () => {
+    if (!openAiKey.trim()) {
+      setAiResult('請先在下方輸入 OpenAI API Key，才可連接 ChatGPT 進行藥單分析。\n\n提醒：藥物相沖及服用注意事項屬醫療高風險資訊，AI 只可作輔助整理，不能取代醫生或藥劑師判斷。')
+      return
+    }
+    if (!meds.length) return notify('請先新增藥物')
+    setAiLoading(true)
+    setAiResult('')
+    try {
+      const medText = meds.map((m, i) => `${i+1}. ${m.name} ${m.dosage || ''}｜每日次數：${m.frequency || '未設定'}｜時間：${m.time || '未設定'}｜備註：${m.note || '沒有'}`).join('\n')
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${openAiKey.trim()}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: '你是協助長者及照顧者整理藥物資料的安全健康助理。你不可診斷，不可叫用戶自行停藥、改藥或加減劑量。若涉及藥物相互作用、禁忌或異常症狀，必須建議向醫生或藥劑師確認。請用繁體中文、簡潔、分點、長者容易明白。' },
+            { role: 'user', content: `請根據以下服藥清單，提供：1. 簡單健康分析；2. 可能需要向醫護確認的藥物相沖或重複風險；3. 特別服用注意事項；4. 需要立即求助的警號。\n\n服藥清單：\n${medText}` }
+          ],
+          temperature: 0.2
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error?.message || 'AI 分析失敗')
+      setAiResult(data.choices?.[0]?.message?.content || '未能取得 AI 分析結果。')
+    } catch (err) {
+      setAiResult(`未能連接 ChatGPT：${err.message}\n\n你仍可使用本地藥物翻譯功能；如要做正式藥物相沖檢查，請向藥劑師查詢。`)
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  return <section className="page fade-in medication-page">
+    <h2>藥物管理</h2>
+
+    <div className={`med-warning ${pendingMeds.length ? 'alert' : 'safe'}`}>
+      <ShieldAlert size={22}/>
+      <div>
+        <b>{pendingMeds.length ? `今日仍有 ${pendingMeds.length} 款藥物未完成服用紀錄` : '今日服藥紀錄暫無未完成提醒'}</b>
+        <p>{pendingMeds.length ? pendingMeds.map(m => m.name).join('、') : '請繼續按醫生或藥劑師指示服藥。'}</p>
+      </div>
+    </div>
+
+    <div className="notice compact"><ShieldAlert size={20}/><small>{DISCLAIMER}</small></div>
+
+    <div className="section-title-row">
+      <div>
+        <p className="eyebrow small">今日服藥</p>
+        <h3>今日藥物清單</h3>
+      </div>
+    </div>
+
+    <div className="med-list today-med-list">
+      {meds.length === 0 && <div className="empty-card">尚未新增藥物。請在下方批量輸入或單一新增。</div>}
+      {meds.map(m => {
+        const takenLogs = getMedLogs(m.id)
+        const required = getDoseCount(m.frequency)
+        const completed = takenLogs.length >= required
+        return <div className="med-card detailed" key={m.id}>
+          <div className="med-main-info">
+            <b>{m.name}</b>
+            <p>{m.dosage || '未設定劑量'}｜每日 {required} 次｜{m.time || '未設定服用時間'}</p>
+            <small>服藥時間：{takenLogs.length ? takenLogs.map(l => l.takenTime).join('、') : '今日未有紀錄'}</small>
+            {m.note && <small>備註：{m.note}</small>}
+            {m.usageDescription && <div className="ai-box med-translation">{m.usageDescription}</div>}
+            {takingId === m.id && !completed && <div className="take-time-panel">
+              <label className="field"><span>請輸入服藥時間</span><input type="time" value={takeTime} onChange={e=>setTakeTime(e.target.value)} /></label>
+              <button className="primary wide" onClick={()=>confirmTaken(m.id)}>確認服用</button>
+            </div>}
+          </div>
+          <div className="med-actions">
+            <button className={completed ? 'taken completed' : 'primary'} disabled={completed} onClick={()=>{ setTakingId(m.id); setTakeTime(timeInputValue()) }}>{completed ? '已完成是日容量' : '已服用'}</button>
+            <button className="ai-mini" onClick={()=>showTranslation(m)}><Sparkles size={18}/>AI 翻譯</button>
+            <button className="delete" onClick={()=>setMeds(meds.filter(x=>x.id!==m.id))}><Trash2 size={18}/></button>
+          </div>
+        </div>
+      })}
+    </div>
+
+    <div className="form-card ai-analysis-card">
+      <h3>AI 藥單分析</h3>
+      <p>根據今日服藥清單，分析可能的服用注意事項、重複用藥或相沖風險。</p>
+      <label className="field"><span>OpenAI API Key（只儲存在本機瀏覽器）</span><input type="password" value={openAiKey} onChange={e=>setOpenAiKey(e.target.value)} placeholder="sk-..." /></label>
+      <button className="secondary wide" onClick={runAiAnalysis} disabled={aiLoading}><Sparkles size={20}/>{aiLoading ? '分析中...' : '連接 ChatGPT 分析藥單'}</button>
+      {aiResult && <div className="ai-box analysis-result">{aiResult}</div>}
+      <small className="safety-note">AI 分析只供健康紀錄及溝通參考，不能取代醫生、護士或藥劑師的專業意見。</small>
+    </div>
+
+    <div className="form-card"><h3>批量輸入藥物</h3><textarea value={bulk} onChange={e=>setBulk(e.target.value)} rows="5" placeholder={'每行格式：藥物名稱 劑量 服用次數 服用時間 備注\n例如：Metformin 500mg 2 早晚飯後 糖尿病用藥\n亦支援：Metformin｜500mg｜2｜早晚飯後｜糖尿病用藥'} /><button className="secondary wide" onClick={addBulk}><Plus size={20}/>批量新增</button></div>
+
     <div className="form-card"><h3>單一藥物輸入</h3>{['name','dosage','frequency','time','note'].map((f,i)=><label className="field" key={f}><span>{['藥物名稱','劑量','服用次數','服用時間','備註'][i]}</span><input value={single[f]} onChange={e=>setSingle({...single,[f]:e.target.value})}/></label>)}
-      <div className="ai-row"><button onClick={()=>setSingle({...single, usageDescription: translateDrugName(single.name)})}><Sparkles size={18}/>AI 轉譯</button><button onClick={explain}><Sparkles size={18}/>說明用途</button></div>
-      {single.usageDescription && <div className="ai-box">{single.usageDescription}</div>}<button className="primary wide" onClick={addSingle}><Plus size={20}/>新增藥物</button></div>
-    <h3>今日服藥清單</h3><div className="med-list">{meds.map(m=>{ const taken=todayLogs.find(l=>l.medicationId===m.id&&l.taken); return <div className="med-card" key={m.id}><div><b>{m.name}</b><p>{m.dosage}｜{m.time || '未設定時間'}</p><small>{m.usageDescription || m.note}</small></div><button className={taken?'taken':''} onClick={()=>markTaken(m.id)}>{taken ? `已服用 ${taken.takenTime}` : '已服用'}</button><button className="delete" onClick={()=>setMeds(meds.filter(x=>x.id!==m.id))}><Trash2 size={18}/></button></div>})}</div>
+      <div className="ai-row"><button onClick={()=>setSingle({...single, usageDescription: buildLocalDrugExplanation(single.name)})}><Sparkles size={18}/>AI 翻譯及用途</button><button onClick={addSingle}><Plus size={18}/>新增藥物</button></div>
+      {single.usageDescription && <div className="ai-box">{single.usageDescription}</div>}
+    </div>
   </section>
 }
 
