@@ -117,6 +117,185 @@ function parseBulkInput(text) {
     })
 }
 
+
+function chineseNumberToInt(text) {
+  const map = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 }
+  if (!text) return null
+  if (/^十$/.test(text)) return 10
+  if (/^十[一二三四五六七八九]$/.test(text)) return 10 + map[text[1]]
+  if (/^[一二兩三四五六七八九]十$/.test(text)) return map[text[0]] * 10
+  return map[text] || null
+}
+
+function getDailyRequiredCount(med) {
+  const text = `${med.frequency || ''} ${med.time || ''}`
+  const digitMatch = text.match(/(?:每日|每天|一日|每天服用|daily)?\s*(\d+)\s*(?:次|times?)/i)
+  if (digitMatch) return Math.max(1, Number(digitMatch[1]))
+  const cnMatch = text.match(/(?:每日|每天|一日)?\s*([一二兩三四五六七八九十]+)\s*次/)
+  if (cnMatch) return Math.max(1, chineseNumberToInt(cnMatch[1]) || 1)
+  if (/\bqid\b|每日四次|一日四次/i.test(text)) return 4
+  if (/\btid\b|每日三次|一日三次/i.test(text)) return 3
+  if (/\bbid\b|每日兩次|每日二次|一日兩次|一日二次/i.test(text)) return 2
+  if (/\bqd\b|每日一次|一日一次|每天一次/i.test(text)) return 1
+  const slots = getExpectedDoseTimes(med)
+  return slots.length || 1
+}
+
+function getExpectedDoseTimes(med) {
+  const text = `${med.time || ''} ${med.frequency || ''}`
+  const rules = [
+    ['早餐前', '07:30'], ['早飯前', '07:30'], ['早餐後', '08:30'], ['早飯後', '08:30'],
+    ['早上', '08:00'], ['上午', '09:00'],
+    ['午餐前', '12:00'], ['午飯前', '12:00'], ['午餐後', '13:00'], ['午飯後', '13:00'], ['中午', '12:30'],
+    ['下午', '15:00'],
+    ['晚餐前', '18:00'], ['晚飯前', '18:00'], ['晚餐後', '19:30'], ['晚飯後', '19:30'], ['晚上', '20:00'],
+    ['睡前', '22:00'], ['臨睡前', '22:00']
+  ]
+  const found = []
+  for (const [keyword, time] of rules) {
+    if (text.includes(keyword) && !found.some((item) => item.label === keyword || item.time === time)) {
+      found.push({ label: keyword, time, minutes: timeToMinutes(time) })
+    }
+  }
+  const directTimes = [...text.matchAll(/\b([01]?\d|2[0-3])[:：]([0-5]\d)\b/g)].map((m) => `${m[1].padStart(2, '0')}:${m[2]}`)
+  for (const time of directTimes) {
+    if (!found.some((item) => item.time === time)) found.push({ label: time, time, minutes: timeToMinutes(time) })
+  }
+  return found.sort((a, b) => a.minutes - b.minutes)
+}
+
+function timeToMinutes(value) {
+  const match = String(value || '').match(/(\d{1,2})[:：](\d{2})/)
+  if (!match) return null
+  return Number(match[1]) * 60 + Number(match[2])
+}
+
+function minutesToTime(minutes) {
+  const normalized = ((Math.round(minutes) % 1440) + 1440) % 1440
+  const h = Math.floor(normalized / 60)
+  const m = normalized % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+function estimateDoseIntervalMinutes(required, expectedSlots) {
+  if (required <= 1) return 0
+  if (expectedSlots.length >= 2) {
+    const gaps = []
+    for (let i = 1; i < Math.min(expectedSlots.length, required); i += 1) {
+      const gap = expectedSlots[i].minutes - expectedSlots[i - 1].minutes
+      if (gap > 0) gaps.push(gap)
+    }
+    if (gaps.length) return Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length)
+  }
+  return Math.round((24 * 60) / required)
+}
+
+function minutesDiffCircular(a, b) {
+  const raw = Math.abs(a - b)
+  return Math.min(raw, 1440 - raw)
+}
+
+function getTodayMedicationStatus(med) {
+  const required = Math.max(1, getDailyRequiredCount(med))
+  const expectedSlots = getExpectedDoseTimes(med)
+  const todayLogs = (med.takenLogs || [])
+    .filter((log) => log.date === todayKey())
+    .map((log) => ({ ...log, minutes: timeToMinutes(log.time) }))
+    .filter((log) => log.minutes !== null)
+    .sort((a, b) => a.minutes - b.minutes)
+  const taken = todayLogs.length
+  const warnings = []
+  const interval = estimateDoseIntervalMinutes(required, expectedSlots)
+  const tolerance = 90
+
+  if (taken > required) {
+    warnings.push(`今日已記錄 ${taken} 次，超過每日要求 ${required} 次，請核對是否重複輸入或多服。`)
+  }
+
+  if (taken >= 2 && required >= 2 && interval > 0) {
+    for (let i = 1; i < todayLogs.length; i += 1) {
+      const actualGap = todayLogs[i].minutes - todayLogs[i - 1].minutes
+      const expectedGap = interval
+      if (actualGap <= 0) {
+        warnings.push(`第 ${i + 1} 次服藥時間早於或等於上一個紀錄，請核對時間。`)
+      } else if (actualGap < Math.max(60, expectedGap - tolerance)) {
+        warnings.push(`第 ${i} 次與第 ${i + 1} 次只相隔約 ${Math.round(actualGap / 60 * 10) / 10} 小時，少於建議間距，請核對是否過早服藥。`)
+      } else if (actualGap > expectedGap + tolerance && i < required) {
+        warnings.push(`第 ${i} 次與第 ${i + 1} 次相隔約 ${Math.round(actualGap / 60 * 10) / 10} 小時，較建議間距明顯延遲，請核對服藥時間。`)
+      }
+    }
+  }
+
+  if (taken >= 1 && required >= 2 && interval > 0) {
+    const firstDose = todayLogs[0].minutes
+    todayLogs.slice(1, Math.min(taken, required)).forEach((log, index) => {
+      const expectedMinutes = firstDose + interval * (index + 1)
+      const diff = minutesDiffCircular(log.minutes, expectedMinutes)
+      if (diff > tolerance) {
+        warnings.push(`第 ${index + 2} 次服藥時間 ${log.time} 與按第一次服藥推算時間 ${minutesToTime(expectedMinutes)} 相差較大。`)
+      }
+    })
+  }
+
+  if (expectedSlots.length) {
+    todayLogs.slice(0, Math.min(todayLogs.length, expectedSlots.length, required)).forEach((log, index) => {
+      const expected = expectedSlots[index]
+      const diff = minutesDiffCircular(log.minutes, expected.minutes)
+      if (diff > 150) {
+        warnings.push(`第 ${index + 1} 次服藥時間 ${log.time} 與藥單建議時間 ${expected.label}（約 ${expected.time}）相差較大。`)
+      }
+    })
+  }
+
+  if (taken === 0) {
+    return {
+      required,
+      taken,
+      todayLogs,
+      status: '請盡快服藥',
+      tone: 'urgent',
+      detail: expectedSlots.length
+        ? `今日尚未有服藥紀錄。藥單建議時間：${expectedSlots.slice(0, required).map((s) => `${s.label} ${s.time}`).join('、')}`
+        : `今日尚未有服藥紀錄。每日需要服用 ${required} 次。`,
+      nextTime: expectedSlots[0]?.time || '',
+      warnings
+    }
+  }
+
+  if (taken >= required) {
+    return {
+      required,
+      taken,
+      todayLogs,
+      status: '已完成',
+      tone: warnings.length ? 'warning' : 'complete',
+      detail: warnings.length ? `今日已記錄 ${taken}/${required} 次，但有時間警告需要核對。` : `今日已完成 ${taken}/${required} 次。`,
+      nextTime: '',
+      warnings
+    }
+  }
+
+  const firstDose = todayLogs[0].minutes
+  const nextByFirstDose = required > 1 && interval > 0 ? minutesToTime(firstDose + interval * taken) : ''
+  const nextByPreset = expectedSlots.length > taken ? expectedSlots[taken].time : ''
+  const nextTime = nextByFirstDose || nextByPreset || ''
+  const nextDetail = nextByFirstDose
+    ? `根據第一次服藥時間 ${todayLogs[0].time} 及每日 ${required} 次推算，下一次約為 ${nextByFirstDose}。`
+    : nextByPreset
+      ? `根據藥單時間，下一次約為 ${nextByPreset}。`
+      : `今日已記錄 ${taken}/${required} 次。`
+
+  return {
+    required,
+    taken,
+    todayLogs,
+    status: `下一次服藥時間：${nextTime || '請按醫囑安排'}`,
+    tone: warnings.length ? 'warning' : 'pending',
+    detail: `${nextDetail} 尚餘 ${required - taken} 次。`,
+    nextTime,
+    warnings
+  }
+}
 function formatMedicationRows(items) {
   return items
     .map((item) => [item.name, item.dose, item.frequency, item.time, item.note].filter(Boolean).join(' | '))
@@ -339,18 +518,31 @@ function MedicationPage({ state, update, flash }) {
         <div className="section-title"><ClipboardList size={20} /><h2>今日服藥清單</h2></div>
         <div className="med-list">
           {state.meds.map((med) => {
-            const todayLogs = (med.takenLogs || []).filter((log) => log.date === todayKey())
+            const check = getTodayMedicationStatus(med)
             return (
-              <article className="med-item" key={med.id}>
-                <div>
+              <article className={`med-item med-check-${check.tone}`} key={med.id}>
+                <div className="med-main-info">
                   <h3>{med.name || '未命名藥物'}</h3>
                   <p>{[med.dose, med.frequency, med.time].filter(Boolean).join(' ｜ ')}</p>
                   {med.note && <small>{med.note}</small>}
-                  {!!todayLogs.length && <div className="taken-time"><CheckCircle2 size={15} />服藥時間：{todayLogs.map((l) => l.time).join('、')}</div>}
+                  <div className={`med-status-badge ${check.tone}`}>
+                    {check.tone === 'complete' ? <CheckCircle2 size={15} /> : check.tone === 'urgent' || check.tone === 'warning' ? <AlertTriangle size={15} /> : <Bell size={15} />}
+                    {check.status}
+                  </div>
+                  <div className="med-progress-text">{check.detail}</div>
+                  {!!check.todayLogs.length && <div className="taken-time"><CheckCircle2 size={15} />今日服藥時間：{check.todayLogs.map((l) => l.time).join('、')}</div>}
+                  {!!check.warnings.length && (
+                    <div className="med-warning-list">
+                      {check.warnings.map((warning) => <div key={warning}>⚠️ {warning}</div>)}
+                    </div>
+                  )}
                 </div>
-                <button className={todayLogs.length ? 'done-btn' : 'take-btn'} onClick={() => markTaken(med.id)}>
-                  {todayLogs.length ? '已完成是日容量' : '已服用'}
-                </button>
+                <div className="med-action-box">
+                  <div className="dose-count"><strong>{check.taken}</strong><span>/ {check.required} 次</span></div>
+                  <button className={check.taken >= check.required ? 'done-btn' : 'take-btn'} onClick={() => markTaken(med.id)}>
+                    新增服藥紀錄
+                  </button>
+                </div>
               </article>
             )
           })}
