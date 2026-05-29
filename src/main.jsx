@@ -38,8 +38,14 @@ const defaultState = {
   bulkText: demoRows,
   meds: [],
   vitals: [
-    { id: 'v1', date: new Date().toISOString().slice(0, 10), type: '血糖', value: '7.2', unit: 'mmol/L', note: '早餐前' },
-    { id: 'v2', date: new Date().toISOString().slice(0, 10), type: '血壓', value: '132/78', unit: 'mmHg', note: '早上量度' }
+    { id: 'v1', date: daysAgo(6), type: '血糖', value: '8.1', unit: 'mmol/L', note: '早餐前' },
+    { id: 'v2', date: daysAgo(5), type: '血壓', value: '138/82', unit: 'mmHg', note: '早上量度' },
+    { id: 'v3', date: daysAgo(4), type: '血糖', value: '7.6', unit: 'mmol/L', note: '早餐前' },
+    { id: 'v4', date: daysAgo(3), type: '血壓', value: '134/80', unit: 'mmHg', note: '早上量度' },
+    { id: 'v5', date: daysAgo(2), type: '血糖', value: '7.2', unit: 'mmol/L', note: '早餐前' },
+    { id: 'v6', date: daysAgo(1), type: '血壓', value: '132/78', unit: 'mmHg', note: '早上量度' },
+    { id: 'v7', date: todayKey(), type: '血糖', value: '6.9', unit: 'mmol/L', note: '早餐前' },
+    { id: 'v8', date: todayKey(), type: '血壓', value: '128/76', unit: 'mmHg', note: '早上量度' }
   ],
   appointments: [
     { id: 'a1', date: '', time: '', title: '覆診', location: '普通科門診', note: '帶藥袋及血糖紀錄' }
@@ -119,6 +125,12 @@ function formatMedicationRows(items) {
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10)
+}
+
+function daysAgo(days) {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date.toISOString().slice(0, 10)
 }
 
 function fileToBase64(file) {
@@ -432,12 +444,17 @@ function AppointmentsPage({ state, update, flash }) {
 
 function RecordsPage({ state, update, flash }) {
   const [form, setForm] = useState({ date: todayKey(), title: '', content: '' })
+  const healthSummary = useMemo(() => buildHealthSummary(state), [state])
+  const sugarData = useMemo(() => getNumericVitals(state.vitals, '血糖'), [state.vitals])
+  const bpData = useMemo(() => getBloodPressureVitals(state.vitals), [state.vitals])
+
   function add() {
     if (!form.title.trim() && !form.content.trim()) return
     update({ records: [{ ...form, id: uid('record') }, ...state.records] })
     setForm({ date: todayKey(), title: '', content: '' })
     flash('已新增健康紀錄')
   }
+
   function exportJson() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -447,17 +464,159 @@ function RecordsPage({ state, update, flash }) {
     a.click()
     URL.revokeObjectURL(url)
   }
+
   return (
     <div className="page-grid">
+      <section className="card ai-health-card">
+        <div className="section-title"><Sparkles size={20} /><h2>整體健康狀況 AI 分析</h2></div>
+        <div className="health-score-row">
+          <div className={`health-score ${healthSummary.levelClass}`}>
+            <strong>{healthSummary.score}</strong>
+            <span>{healthSummary.level}</span>
+          </div>
+          <div>
+            <h3>{healthSummary.title}</h3>
+            <p>{healthSummary.message}</p>
+          </div>
+        </div>
+        <div className="insight-grid">
+          {healthSummary.points.map((point) => <div className="insight-item" key={point}>{point}</div>)}
+        </div>
+        <p className="hint compact">此分析根據已輸入的血糖、血壓及紀錄趨勢作初步整理，只作健康自我管理參考；如數值持續偏高、偏低或不適，應向醫護人員查詢。</p>
+      </section>
+
+      <section className="chart-grid">
+        <LineChartCard
+          title="血糖趨勢"
+          subtitle="按日期顯示已輸入血糖數值"
+          data={sugarData}
+          lines={[{ key: 'value', label: '血糖', unit: 'mmol/L' }]}
+          emptyText="未有足夠血糖數據，請先在健康頁新增至少 2 筆血糖紀錄。"
+        />
+        <LineChartCard
+          title="血壓趨勢"
+          subtitle="收縮壓／舒張壓折線圖"
+          data={bpData}
+          lines={[{ key: 'systolic', label: '收縮壓', unit: 'mmHg' }, { key: 'diastolic', label: '舒張壓', unit: 'mmHg' }]}
+          emptyText="未有足夠血壓數據，請先在健康頁新增至少 2 筆血壓紀錄，例如 132/78。"
+        />
+      </section>
+
       <section className="card form-card">
-        <div className="section-title"><ClipboardList size={20} /><h2>新增健康紀錄</h2></div>
+        <div className="section-title"><ClipboardList size={20} /><h2>新增健康備註</h2></div>
         <div className="form-grid two"><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /><input placeholder="標題" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
         <textarea rows={5} placeholder="今日身體狀況、飲食、運動、睡眠或照顧備註" value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} />
-        <button className="primary-btn" onClick={add}><Save size={17} />儲存紀錄</button>
+        <button className="primary-btn" onClick={add}><Save size={17} />儲存備註</button>
         <button className="secondary-btn" onClick={exportJson}><Download size={17} />匯出全部資料 JSON</button>
       </section>
-      <ListCard title="健康紀錄" icon={<ClipboardList size={20} />} items={state.records} render={(r) => <><strong>{r.date}｜{r.title || '未命名紀錄'}</strong><span>{r.content}</span></>} onDelete={(id) => update({ records: state.records.filter((r) => r.id !== id) })} />
+      <ListCard title="健康備註紀錄" icon={<ClipboardList size={20} />} items={state.records} render={(r) => <><strong>{r.date}｜{r.title || '未命名紀錄'}</strong><span>{r.content}</span></>} onDelete={(id) => update({ records: state.records.filter((r) => r.id !== id) })} />
     </div>
+  )
+}
+
+function getNumericVitals(vitals, type) {
+  return [...vitals]
+    .filter((v) => v.type === type)
+    .map((v) => ({ date: v.date, label: shortDate(v.date), value: Number.parseFloat(String(v.value).replace(/[^0-9.]/g, '')) }))
+    .filter((v) => Number.isFinite(v.value))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-12)
+}
+
+function getBloodPressureVitals(vitals) {
+  return [...vitals]
+    .filter((v) => v.type === '血壓')
+    .map((v) => {
+      const match = String(v.value).match(/(\d{2,3})\s*[/／]\s*(\d{2,3})/)
+      return match ? { date: v.date, label: shortDate(v.date), systolic: Number(match[1]), diastolic: Number(match[2]) } : null
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-12)
+}
+
+function shortDate(dateText) {
+  if (!dateText) return ''
+  const parts = dateText.split('-')
+  return parts.length === 3 ? `${Number(parts[1])}/${Number(parts[2])}` : dateText
+}
+
+function buildHealthSummary(state) {
+  const sugar = getNumericVitals(state.vitals, '血糖')
+  const bp = getBloodPressureVitals(state.vitals)
+  const latestSugar = sugar.at(-1)?.value
+  const previousSugar = sugar.length > 1 ? sugar.at(-2)?.value : null
+  const latestBp = bp.at(-1)
+  const completedToday = state.meds.filter((m) => (m.takenLogs || []).some((log) => log.date === todayKey())).length
+  const adherence = state.meds.length ? Math.round((completedToday / state.meds.length) * 100) : 0
+
+  let score = 82
+  const points = []
+  if (Number.isFinite(latestSugar)) {
+    if (latestSugar >= 10) { score -= 18; points.push(`最新血糖 ${latestSugar} mmol/L 偏高，建議留意飲食、服藥及覆診安排。`) }
+    else if (latestSugar >= 7.8) { score -= 8; points.push(`最新血糖 ${latestSugar} mmol/L 稍高，宜繼續觀察餐前／餐後變化。`) }
+    else if (latestSugar < 4) { score -= 18; points.push(`最新血糖 ${latestSugar} mmol/L 偏低，如有手震、冒汗或頭暈要即時處理。`) }
+    else points.push(`最新血糖 ${latestSugar} mmol/L，暫時較平穩。`)
+    if (previousSugar && latestSugar < previousSugar) points.push(`血糖較上一筆下降 ${Math.abs(latestSugar - previousSugar).toFixed(1)} mmol/L，趨勢有改善。`)
+  } else points.push('暫未有可分析的血糖紀錄。')
+
+  if (latestBp) {
+    if (latestBp.systolic >= 140 || latestBp.diastolic >= 90) { score -= 15; points.push(`最新血壓 ${latestBp.systolic}/${latestBp.diastolic} mmHg 偏高，建議定時重測並記錄。`) }
+    else if (latestBp.systolic < 90 || latestBp.diastolic < 60) { score -= 14; points.push(`最新血壓 ${latestBp.systolic}/${latestBp.diastolic} mmHg 偏低，若頭暈或乏力應求醫。`) }
+    else points.push(`最新血壓 ${latestBp.systolic}/${latestBp.diastolic} mmHg，暫時在較理想範圍。`)
+  } else points.push('暫未有可分析的血壓紀錄。')
+
+  if (state.meds.length) points.push(`今日服藥完成度約 ${adherence}%，可用藥物頁逐項打勾追蹤。`)
+  score = Math.max(35, Math.min(98, score))
+
+  const level = score >= 85 ? '穩定' : score >= 70 ? '需要留意' : '建議跟進'
+  const levelClass = score >= 85 ? 'good' : score >= 70 ? 'watch' : 'alert'
+  const title = score >= 85 ? '整體趨勢暫時平穩' : score >= 70 ? '有部分數據需要持續觀察' : '近期數據可能需要較積極跟進'
+  const message = '系統已把最新健康數據、趨勢及今日服藥狀況整理成摘要，方便照顧者或長者快速掌握重點。'
+  return { score, level, levelClass, title, message, points: points.slice(0, 5) }
+}
+
+function LineChartCard({ title, subtitle, data, lines, emptyText }) {
+  const width = 680
+  const height = 260
+  const padding = { top: 24, right: 28, bottom: 46, left: 46 }
+  const values = data.flatMap((row) => lines.map((line) => row[line.key]).filter((value) => Number.isFinite(value)))
+  const hasEnough = data.length >= 2 && values.length >= 2
+  const minValue = hasEnough ? Math.min(...values) : 0
+  const maxValue = hasEnough ? Math.max(...values) : 1
+  const spread = Math.max(1, maxValue - minValue)
+  const yMin = Math.max(0, Math.floor(minValue - spread * 0.2))
+  const yMax = Math.ceil(maxValue + spread * 0.2)
+
+  function xAt(index) {
+    return padding.left + (index / Math.max(1, data.length - 1)) * (width - padding.left - padding.right)
+  }
+  function yAt(value) {
+    return padding.top + ((yMax - value) / Math.max(1, yMax - yMin)) * (height - padding.top - padding.bottom)
+  }
+  function pathFor(line) {
+    return data.map((row, index) => `${index === 0 ? 'M' : 'L'} ${xAt(index)} ${yAt(row[line.key])}`).join(' ')
+  }
+
+  return (
+    <section className="card chart-card">
+      <div className="chart-head">
+        <div><h2>{title}</h2><p>{subtitle}</p></div>
+        <div className="chart-legend">{lines.map((line) => <span key={line.key}><i />{line.label}</span>)}</div>
+      </div>
+      {!hasEnough ? <div className="empty-chart">{emptyText}</div> : (
+        <svg className="line-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
+          {[0, 1, 2, 3].map((tick) => {
+            const y = padding.top + tick * ((height - padding.top - padding.bottom) / 3)
+            const value = Math.round(yMax - tick * ((yMax - yMin) / 3))
+            return <g key={tick}><line className="grid-line" x1={padding.left} x2={width - padding.right} y1={y} y2={y} /><text className="axis-text" x={padding.left - 10} y={y + 4} textAnchor="end">{value}</text></g>
+          })}
+          {data.map((row, index) => <text className="axis-text" key={row.date + index} x={xAt(index)} y={height - 16} textAnchor="middle">{row.label}</text>)}
+          {lines.map((line, lineIndex) => <path key={line.key} className={`data-line line-${lineIndex}`} d={pathFor(line)} />)}
+          {lines.map((line, lineIndex) => data.map((row, index) => <g key={`${line.key}-${row.date}-${index}`}><circle className={`data-dot line-${lineIndex}`} cx={xAt(index)} cy={yAt(row[line.key])} r="4.5" /><text className="point-label" x={xAt(index)} y={yAt(row[line.key]) - 9} textAnchor="middle">{row[line.key]}</text></g>))}
+        </svg>
+      )}
+    </section>
   )
 }
 
