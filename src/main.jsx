@@ -609,29 +609,187 @@ function VitalsPage({ state, update, flash }) {
 }
 
 function AppointmentsPage({ state, update, flash }) {
-  const [form, setForm] = useState({ date: '', time: '', title: '', location: '', note: '' })
-  function add() {
-    if (!form.title.trim()) return
-    update({ appointments: [{ ...form, id: uid('appt') }, ...state.appointments] })
-    setForm({ date: '', time: '', title: '', location: '', note: '' })
-    flash('已新增覆診提醒')
+  const appointments = useMemo(() => [...state.appointments].sort(sortAppointments), [state.appointments])
+  const firstDated = appointments.find((a) => a.date)
+  const [selectedDate, setSelectedDate] = useState(firstDated?.date || todayKey())
+  const [viewMonth, setViewMonth] = useState((firstDated?.date || todayKey()).slice(0, 7))
+  const [showForm, setShowForm] = useState(false)
+  const [selectedItem, setSelectedItem] = useState(null)
+  const [form, setForm] = useState({ date: selectedDate || todayKey(), time: '', title: '', location: '', note: '' })
+
+  const monthDays = useMemo(() => buildCalendarDays(viewMonth), [viewMonth])
+  const appointmentsByDate = useMemo(() => groupAppointmentsByDate(appointments), [appointments])
+  const selectedItems = appointmentsByDate[selectedDate] || []
+  const monthLabel = formatMonthLabel(viewMonth)
+
+  function openAdd(date = selectedDate || todayKey()) {
+    setForm({ date, time: '', title: '', location: '', note: '' })
+    setShowForm(true)
+    setSelectedItem(null)
   }
+
+  function add() {
+    if (!form.date || !form.title.trim()) {
+      flash('請先輸入日期及預約項目')
+      return
+    }
+    const item = { ...form, id: uid('appt') }
+    update({ appointments: [item, ...state.appointments] })
+    setSelectedDate(form.date)
+    setViewMonth(form.date.slice(0, 7))
+    setForm({ date: form.date, time: '', title: '', location: '', note: '' })
+    setShowForm(false)
+    flash('已新增覆診／檢查紀錄')
+  }
+
+  function remove(id) {
+    update({ appointments: state.appointments.filter((a) => a.id !== id) })
+    if (selectedItem?.id === id) setSelectedItem(null)
+    flash('已刪除預約紀錄')
+  }
+
+  function changeMonth(offset) {
+    const [y, m] = viewMonth.split('-').map(Number)
+    const next = new Date(y, m - 1 + offset, 1)
+    setViewMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`)
+  }
+
   return (
-    <div className="page-grid">
-      <section className="card form-card">
-        <div className="section-title"><CalendarDays size={20} /><h2>新增覆診／檢查</h2></div>
-        <div className="form-grid">
-          <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-          <input type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} />
-          <input placeholder="事項，例如 糖尿科覆診" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-          <input placeholder="地點" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+    <div className="page-grid appointment-page">
+      <section className="card calendar-card">
+        <div className="appointment-header">
+          <div className="section-title"><CalendarDays size={20} /><h2>覆診／檢查日曆</h2></div>
+          <button className="icon-add-btn" title="新增預約" onClick={() => openAdd()}><Plus size={22} /></button>
         </div>
-        <textarea rows={3} placeholder="備註" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-        <button className="primary-btn" onClick={add}><Bell size={17} />新增提醒</button>
+
+        <div className="calendar-toolbar">
+          <button onClick={() => changeMonth(-1)}>‹</button>
+          <strong>{monthLabel}</strong>
+          <button onClick={() => changeMonth(1)}>›</button>
+        </div>
+
+        <div className="calendar-weekdays">
+          {['日', '一', '二', '三', '四', '五', '六'].map((d) => <span key={d}>{d}</span>)}
+        </div>
+
+        <div className="calendar-grid">
+          {monthDays.map((day) => {
+            const count = day.date ? (appointmentsByDate[day.date]?.length || 0) : 0
+            const isSelected = day.date === selectedDate
+            const isToday = day.date === todayKey()
+            return (
+              <button
+                key={day.key}
+                className={`calendar-day ${day.inMonth ? '' : 'muted'} ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''} ${count ? 'has-event' : ''}`}
+                onClick={() => {
+                  if (!day.date) return
+                  setSelectedDate(day.date)
+                  setSelectedItem(null)
+                  if (day.date.slice(0, 7) !== viewMonth) setViewMonth(day.date.slice(0, 7))
+                }}
+              >
+                <span>{day.label}</span>
+                {count > 0 && <em>{count}</em>}
+              </button>
+            )
+          })}
+        </div>
       </section>
-      <ListCard title="覆診提醒" icon={<CalendarDays size={20} />} items={state.appointments} render={(a) => <><strong>{a.date || '未設定日期'} {a.time}｜{a.title}</strong><span>{a.location}</span><small>{a.note}</small></>} onDelete={(id) => update({ appointments: state.appointments.filter((a) => a.id !== id) })} />
+
+      {showForm && (
+        <section className="card form-card appointment-form-card">
+          <div className="appointment-header">
+            <div className="section-title"><Bell size={20} /><h2>新增預約紀錄</h2></div>
+            <button className="close-btn" onClick={() => setShowForm(false)}>取消</button>
+          </div>
+          <div className="form-grid">
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+            <input type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} />
+            <input placeholder="預約項目，例如 糖尿科覆診 / 抽血檢查" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+            <input placeholder="地點，例如 普通科門診 / 醫院專科門診" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+          </div>
+          <textarea rows={3} placeholder="備註，例如 帶藥袋、血糖紀錄、轉介信" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          <button className="primary-btn" onClick={add}><Save size={17} />儲存預約</button>
+        </section>
+      )}
+
+      <section className="card appointment-list-card">
+        <div className="section-title"><ClipboardList size={20} /><h2>{formatFullDate(selectedDate)} 的預約項目</h2></div>
+        {selectedItems.length ? (
+          <div className="appointment-list">
+            {selectedItems.map((a) => (
+              <button key={a.id} className={`appointment-row ${selectedItem?.id === a.id ? 'active' : ''}`} onClick={() => setSelectedItem(a)}>
+                <strong>{a.time || '未設定時間'}｜{a.title}</strong>
+                <span>{a.location || '未設定地點'}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-appointment">
+            <p>這一天未有覆診或檢查紀錄。</p>
+            <button className="secondary-btn" onClick={() => openAdd(selectedDate)}><Plus size={17} />在這一天新增預約</button>
+          </div>
+        )}
+      </section>
+
+      {selectedItem && (
+        <section className="card appointment-detail-card">
+          <div className="section-title"><Stethoscope size={20} /><h2>預約詳情</h2></div>
+          <div className="detail-grid">
+            <div><span>日期</span><strong>{selectedItem.date || '未設定'}</strong></div>
+            <div><span>時間</span><strong>{selectedItem.time || '未設定'}</strong></div>
+            <div><span>項目</span><strong>{selectedItem.title || '未命名預約'}</strong></div>
+            <div><span>地點</span><strong>{selectedItem.location || '未設定'}</strong></div>
+          </div>
+          <div className="detail-note"><span>備註</span><p>{selectedItem.note || '未有備註'}</p></div>
+          <button className="danger-btn" onClick={() => remove(selectedItem.id)}><Trash2 size={17} />刪除這項預約</button>
+        </section>
+      )}
     </div>
   )
+}
+
+function sortAppointments(a, b) {
+  const av = `${a.date || '9999-12-31'} ${a.time || '23:59'}`
+  const bv = `${b.date || '9999-12-31'} ${b.time || '23:59'}`
+  return av.localeCompare(bv)
+}
+
+function groupAppointmentsByDate(items) {
+  return items.reduce((acc, item) => {
+    if (!item.date) return acc
+    acc[item.date] = acc[item.date] || []
+    acc[item.date].push(item)
+    return acc
+  }, {})
+}
+
+function buildCalendarDays(monthKey) {
+  const [year, month] = monthKey.split('-').map(Number)
+  const first = new Date(year, month - 1, 1)
+  const start = new Date(year, month - 1, 1 - first.getDay())
+  return Array.from({ length: 42 }, (_, index) => {
+    const d = new Date(start)
+    d.setDate(start.getDate() + index)
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return {
+      key: `${date}-${index}`,
+      date,
+      label: d.getDate(),
+      inMonth: d.getMonth() === month - 1
+    }
+  })
+}
+
+function formatMonthLabel(monthKey) {
+  const [year, month] = monthKey.split('-')
+  return `${year}年${Number(month)}月`
+}
+
+function formatFullDate(dateKey) {
+  if (!dateKey) return '未選擇日期'
+  const [year, month, day] = dateKey.split('-')
+  return `${year}年${Number(month)}月${Number(day)}日`
 }
 
 function RecordsPage({ state, update, flash }) {
