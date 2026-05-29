@@ -7,3 +7,16 @@
 /* v1.2 medication page update */
 .medication-page .section-title-row{margin-top:10px}.med-warning{display:flex;gap:12px;align-items:flex-start;border-radius:22px;padding:15px 16px;margin-bottom:14px;border:2px solid transparent}.med-warning p{margin:4px 0 0}.med-warning.alert{background:#fff1ef;border-color:#ffb8ad;color:#a92716}.med-warning.safe{background:#edf8f0;border-color:#b8e2c5;color:#176331}.today-med-list{margin-bottom:16px}.empty-card{background:#fffdf7;border:1px dashed #cddbd4;border-radius:22px;padding:18px;color:var(--muted);font-weight:800}.med-card.detailed{grid-template-columns:1fr 190px;align-items:start}.med-main-info b{font-size:22px}.med-actions{display:grid;gap:8px;align-self:start}.med-actions button{width:100%;min-height:48px}.med-actions .completed{cursor:not-allowed;opacity:.9}.ai-mini{background:#eef4ff;color:#274c88;display:flex;align-items:center;justify-content:center;gap:7px}.take-time-panel{background:#f7fbff;border:1px solid #d8e8ff;border-radius:20px;padding:12px;margin-top:12px}.take-time-panel .field{margin:0 0 8px}.med-translation{white-space:pre-line;margin-top:12px}.ai-analysis-card{margin:18px 0}.analysis-result{white-space:pre-line;margin-top:12px}.safety-note{display:block;color:#79633a;line-height:1.55;margin-top:10px}.medication-page textarea{min-height:130px}
 @media(max-width:720px){.med-card.detailed{grid-template-columns:1fr}.med-actions{grid-template-columns:1fr 1fr}.med-actions .delete{grid-column:1/-1}.med-warning{font-size:16px}}
+
+.backend-ai-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: #eefaf7;
+  color: #17695a;
+  font-weight: 800;
+  line-height: 1.5;
+  margin: 10px 0 14px;
+}

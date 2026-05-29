@@ -306,7 +306,6 @@ function MedicationPage({ meds, setMeds, logs, markTaken, notify }) {
   const [takeTime, setTakeTime] = useState(timeInputValue())
   const [aiResult, setAiResult] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
-  const [openAiKey, setOpenAiKey] = useLocalStorage('openaiApiKey', '')
   const today = todayKey()
   const todayLogs = logs.filter(l => l.date === today)
 
@@ -350,35 +349,29 @@ function MedicationPage({ meds, setMeds, logs, markTaken, notify }) {
   }
 
   const runAiAnalysis = async () => {
-    if (!openAiKey.trim()) {
-      setAiResult('請先在下方輸入 OpenAI API Key，才可連接 ChatGPT 進行藥單分析。\n\n提醒：藥物相沖及服用注意事項屬醫療高風險資訊，AI 只可作輔助整理，不能取代醫生或藥劑師判斷。')
-      return
-    }
     if (!meds.length) return notify('請先新增藥物')
     setAiLoading(true)
     setAiResult('')
     try {
-      const medText = meds.map((m, i) => `${i+1}. ${m.name} ${m.dosage || ''}｜每日次數：${m.frequency || '未設定'}｜時間：${m.time || '未設定'}｜備註：${m.note || '沒有'}`).join('\n')
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      const payload = meds.map((m, i) => ({
+        no: i + 1,
+        name: m.name,
+        dosage: m.dosage || '',
+        frequency: m.frequency || '',
+        time: m.time || '',
+        note: m.note || ''
+      }))
+
+      const res = await fetch('/api/ai', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${openAiKey.trim()}`
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: '你是協助長者及照顧者整理藥物資料的安全健康助理。你不可診斷，不可叫用戶自行停藥、改藥或加減劑量。若涉及藥物相互作用、禁忌或異常症狀，必須建議向醫生或藥劑師確認。請用繁體中文、簡潔、分點、長者容易明白。' },
-            { role: 'user', content: `請根據以下服藥清單，提供：1. 簡單健康分析；2. 可能需要向醫護確認的藥物相沖或重複風險；3. 特別服用注意事項；4. 需要立即求助的警號。\n\n服藥清單：\n${medText}` }
-          ],
-          temperature: 0.2
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'medication-analysis', medications: payload })
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error?.message || 'AI 分析失敗')
-      setAiResult(data.choices?.[0]?.message?.content || '未能取得 AI 分析結果。')
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'AI 分析失敗')
+      setAiResult(data.result || '未能取得 AI 分析結果。')
     } catch (err) {
-      setAiResult(`未能連接 ChatGPT：${err.message}\n\n你仍可使用本地藥物翻譯功能；如要做正式藥物相沖檢查，請向藥劑師查詢。`)
+      setAiResult(`未能連接後端 AI：${err.message}\n\n請確認已部署到 Vercel，並已在 Environment Variables 設定 OPENAI_API_KEY。AI 分析只供溝通及紀錄參考，如要確認藥物相沖或服用安排，請向醫生或藥劑師查詢。`)
     } finally {
       setAiLoading(false)
     }
@@ -434,8 +427,11 @@ function MedicationPage({ meds, setMeds, logs, markTaken, notify }) {
     <div className="form-card ai-analysis-card">
       <h3>AI 藥單分析</h3>
       <p>根據今日服藥清單，分析可能的服用注意事項、重複用藥或相沖風險。</p>
-      <label className="field"><span>OpenAI API Key（只儲存在本機瀏覽器）</span><input type="password" value={openAiKey} onChange={e=>setOpenAiKey(e.target.value)} placeholder="sk-..." /></label>
-      <button className="secondary wide" onClick={runAiAnalysis} disabled={aiLoading}><Sparkles size={20}/>{aiLoading ? '分析中...' : '連接 ChatGPT 分析藥單'}</button>
+      <div className="backend-ai-note">
+        <ShieldAlert size={20}/>
+        <span>AI 會透過網站後端安全連接 ChatGPT，不會要求用戶在前端輸入 API Key。</span>
+      </div>
+      <button className="secondary wide" onClick={runAiAnalysis} disabled={aiLoading}><Sparkles size={20}/>{aiLoading ? '分析中...' : '連接後端 AI 分析藥單'}</button>
       {aiResult && <div className="ai-box analysis-result">{aiResult}</div>}
       <small className="safety-note">AI 分析只供健康紀錄及溝通參考，不能取代醫生、護士或藥劑師的專業意見。</small>
     </div>
