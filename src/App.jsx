@@ -162,37 +162,128 @@ function InfoCard({title, tone, icon, children}) {
 
 function InputPage({ addRecord }) {
   const [mode, setMode] = useState('bloodPressure')
-  const [activeField, setActiveField] = useState('systolic')
-  const [form, setForm] = useState({ systolic:'', diastolic:'', pulse:'', glucoseValue:'', glucoseType:'空腹', customName:'', customValue:'', customUnit:'', note:'' })
-  const fields = mode === 'bloodPressure' ? ['systolic','diastolic','pulse'] : mode === 'bloodGlucose' ? ['glucoseValue'] : ['customValue']
+  const [form, setForm] = useState({
+    systolic: '',
+    diastolic: '',
+    pulse: '',
+    glucoseValue: '',
+    glucoseType: '空腹',
+    customName: '',
+    customValue: '',
+    customUnit: '',
+    note: ''
+  })
 
-  const pressKey = (key) => {
-    if (!fields.includes(activeField)) setActiveField(fields[0])
-    setForm(prev => {
-      const val = prev[activeField] || ''
-      return { ...prev, [activeField]: key === 'del' ? val.slice(0,-1) : val + key }
-    })
-  }
+  const resetForm = () => setForm({
+    systolic: '',
+    diastolic: '',
+    pulse: '',
+    glucoseValue: '',
+    glucoseType: '空腹',
+    customName: '',
+    customValue: '',
+    customUnit: '',
+    note: ''
+  })
+
+  const update = (key, value) => setForm(prev => ({ ...prev, [key]: value }))
+
   const submit = () => {
-    if (mode === 'bloodPressure') addRecord({ type: 'bloodPressure', systolic: form.systolic, diastolic: form.diastolic, pulse: form.pulse, note: form.note })
-    if (mode === 'bloodGlucose') addRecord({ type: 'bloodGlucose', value: form.glucoseValue, unit: 'mmol/L', glucoseType: form.glucoseType, note: form.note })
-    if (mode === 'custom') addRecord({ type: 'custom', name: form.customName, value: form.customValue, unit: form.customUnit, note: form.note })
-    setForm({ systolic:'', diastolic:'', pulse:'', glucoseValue:'', glucoseType:'空腹', customName:'', customValue:'', customUnit:'', note:'' })
+    if (mode === 'bloodPressure') {
+      if (!form.systolic && !form.diastolic && !form.pulse) return
+      addRecord({
+        type: 'bloodPressure',
+        systolic: form.systolic,
+        diastolic: form.diastolic,
+        pulse: form.pulse,
+        note: form.note
+      })
+    }
+    if (mode === 'bloodGlucose') {
+      if (!form.glucoseValue) return
+      addRecord({
+        type: 'bloodGlucose',
+        value: form.glucoseValue,
+        unit: 'mmol/L',
+        glucoseType: form.glucoseType,
+        note: form.note
+      })
+    }
+    if (mode === 'custom') {
+      if (!form.customName && !form.customValue) return
+      addRecord({
+        type: 'custom',
+        name: form.customName,
+        value: form.customValue,
+        unit: form.customUnit,
+        note: form.note
+      })
+    }
+    resetForm()
   }
-  const modes = [['bloodPressure','血壓'],['bloodGlucose','血糖'],['custom','自訂紀錄']]
-  return <section className="page fade-in"><h2>新增健康紀錄</h2><div className="mode-tabs">{modes.map(([k,l])=><button key={k} onClick={()=>{setMode(k); setActiveField(k==='bloodPressure'?'systolic':k==='bloodGlucose'?'glucoseValue':'customValue')}} className={mode===k?'selected':''}>{l}</button>)}</div>
-    <div className="form-card">
-      {mode==='bloodPressure' && <><Input label="收縮壓" value={form.systolic} active={activeField==='systolic'} onFocus={()=>setActiveField('systolic')}/><Input label="舒張壓" value={form.diastolic} active={activeField==='diastolic'} onFocus={()=>setActiveField('diastolic')}/><Input label="心跳" value={form.pulse} active={activeField==='pulse'} onFocus={()=>setActiveField('pulse')}/></>}
-      {mode==='bloodGlucose' && <><label className="field"><span>血糖類型</span><select value={form.glucoseType} onChange={e=>setForm({...form, glucoseType:e.target.value})}>{['空腹','飯前','飯後','睡前'].map(x=><option key={x}>{x}</option>)}</select></label><Input label="血糖數值" value={form.glucoseValue} active={activeField==='glucoseValue'} onFocus={()=>setActiveField('glucoseValue')}/></>}
-      {mode==='custom' && <><label className="field"><span>紀錄名稱</span><input value={form.customName} onChange={e=>setForm({...form, customName:e.target.value})} placeholder="例如：體溫"/></label><Input label="數值" value={form.customValue} active={activeField==='customValue'} onFocus={()=>setActiveField('customValue')}/><label className="field"><span>單位</span><input value={form.customUnit} onChange={e=>setForm({...form, customUnit:e.target.value})} placeholder="例如：°C"/></label></>}
-      <label className="field"><span>備註</span><textarea value={form.note} onChange={e=>setForm({...form, note:e.target.value})} placeholder="可輸入量度情況或身體感覺"/></label>
+
+  const modes = [
+    ['bloodPressure', '血壓', '收縮壓 / 舒張壓 / 心跳'],
+    ['bloodGlucose', '血糖', '空腹 / 飯前 / 飯後 / 睡前'],
+    ['custom', '自訂', '體溫、體重、疼痛分數等']
+  ]
+
+  return <section className="page fade-in input-page">
+    <div className="section-title-row">
+      <div>
+        <p className="eyebrow small">新增紀錄</p>
+        <h2>輸入健康數據</h2>
+      </div>
     </div>
-    <NumberPad onPress={pressKey}/><button className="primary wide" onClick={submit}><Save size={22}/>確認儲存紀錄</button>
+
+    <div className="horizontal-input-tabs" role="tablist" aria-label="健康紀錄類型">
+      {modes.map(([key, label, hint]) => (
+        <button
+          key={key}
+          type="button"
+          className={mode === key ? 'selected' : ''}
+          onClick={() => setMode(key)}
+        >
+          <b>{label}</b>
+          <small>{hint}</small>
+        </button>
+      ))}
+    </div>
+
+    <div className="form-card input-panel">
+      {mode === 'bloodPressure' && <>
+        <h3>血壓紀錄</h3>
+        <div className="row three">
+          <label className="field"><span>收縮壓</span><input inputMode="decimal" type="number" value={form.systolic} onChange={e => update('systolic', e.target.value)} placeholder="例如 135" /></label>
+          <label className="field"><span>舒張壓</span><input inputMode="decimal" type="number" value={form.diastolic} onChange={e => update('diastolic', e.target.value)} placeholder="例如 82" /></label>
+          <label className="field"><span>心跳</span><input inputMode="decimal" type="number" value={form.pulse} onChange={e => update('pulse', e.target.value)} placeholder="例如 76" /></label>
+        </div>
+        <div className="unit-note">單位：血壓 mmHg｜心跳 bpm</div>
+      </>}
+
+      {mode === 'bloodGlucose' && <>
+        <h3>血糖紀錄</h3>
+        <div className="row two-inputs">
+          <label className="field"><span>血糖類型</span><select value={form.glucoseType} onChange={e => update('glucoseType', e.target.value)}>{['空腹','飯前','飯後','睡前'].map(x => <option key={x}>{x}</option>)}</select></label>
+          <label className="field"><span>血糖數值</span><input inputMode="decimal" type="number" step="0.1" value={form.glucoseValue} onChange={e => update('glucoseValue', e.target.value)} placeholder="例如 6.2" /></label>
+        </div>
+        <div className="unit-note">單位：mmol/L</div>
+      </>}
+
+      {mode === 'custom' && <>
+        <h3>自訂紀錄</h3>
+        <div className="row three">
+          <label className="field"><span>紀錄名稱</span><input value={form.customName} onChange={e => update('customName', e.target.value)} placeholder="例如：體溫" /></label>
+          <label className="field"><span>數值</span><input inputMode="decimal" type="number" step="0.1" value={form.customValue} onChange={e => update('customValue', e.target.value)} placeholder="例如 36.5" /></label>
+          <label className="field"><span>單位</span><input value={form.customUnit} onChange={e => update('customUnit', e.target.value)} placeholder="例如：°C" /></label>
+        </div>
+      </>}
+
+      <label className="field"><span>備註</span><textarea value={form.note} onChange={e => update('note', e.target.value)} placeholder="可輸入量度情況、身體感覺或照顧者備註" /></label>
+      <button className="primary wide" onClick={submit}><Save size={22}/>確認儲存紀錄</button>
+    </div>
   </section>
 }
-
-function Input({ label, value, active, onFocus }) { return <label className={`field ${active?'active-field':''}`} onClick={onFocus}><span>{label}</span><input readOnly value={value} placeholder="按下方九宮格輸入"/></label> }
-function NumberPad({ onPress }) { return <div className="number-pad">{['1','2','3','4','5','6','7','8','9','.','0','del'].map(k=><button key={k} onClick={()=>onPress(k)}>{k==='del'?'刪除':k}</button>)}</div> }
 
 function MedicationPage({ meds, setMeds, logs, markTaken, notify }) {
   const [bulk, setBulk] = useState('')
