@@ -6,6 +6,8 @@ import {
   Bell,
   CalendarDays,
   Camera,
+  Cloud,
+  CloudOff,
   CheckCircle2,
   ClipboardList,
   Download,
@@ -13,9 +15,14 @@ import {
   HeartPulse,
   Home,
   Loader2,
+  Lock,
+  LogIn,
+  LogOut,
+  Mail,
   Moon,
   Pill,
   Plus,
+  RefreshCw,
   Save,
   Settings,
   Sparkles,
@@ -24,8 +31,10 @@ import {
   UserRound
 } from 'lucide-react'
 import './styles.css'
+import { supabase, supabaseConfigured } from './supabase'
 
 const STORAGE_KEY = 'elderHealthSelfCare.full.v3'
+const DEVICE_ID_KEY = 'elderHealthSelfCare.deviceId.v1'
 
 const demoRows = [
   'Metformin | 500mg | 每日2次 | 早餐後、晚餐後 | 糖尿病用藥',
@@ -62,23 +71,364 @@ function uid(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+function normalizeState(parsed) {
+  if (!parsed || typeof parsed !== 'object') return defaultState
+  return {
+    ...defaultState,
+    ...parsed,
+    profile: { ...defaultState.profile, ...(parsed.profile || {}) },
+    reminders: { ...defaultState.reminders, ...(parsed.reminders || {}) },
+    meds: Array.isArray(parsed.meds) ? parsed.meds : defaultState.meds,
+    vitals: Array.isArray(parsed.vitals) ? parsed.vitals : defaultState.vitals,
+    appointments: Array.isArray(parsed.appointments) ? parsed.appointments : defaultState.appointments,
+    records: Array.isArray(parsed.records) ? parsed.records : defaultState.records
+  }
+}
+
 function safeLoad() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return defaultState
-    const parsed = JSON.parse(raw)
-    return {
-      ...defaultState,
-      ...parsed,
-      profile: { ...defaultState.profile, ...(parsed.profile || {}) },
-      reminders: { ...defaultState.reminders, ...(parsed.reminders || {}) },
-      meds: Array.isArray(parsed.meds) ? parsed.meds : defaultState.meds,
-      vitals: Array.isArray(parsed.vitals) ? parsed.vitals : defaultState.vitals,
-      appointments: Array.isArray(parsed.appointments) ? parsed.appointments : defaultState.appointments,
-      records: Array.isArray(parsed.records) ? parsed.records : defaultState.records
-    }
+    return raw ? normalizeState(JSON.parse(raw)) : defaultState
   } catch {
     return defaultState
+  }
+}
+
+function userStorageKey(userId) {
+  return `${STORAGE_KEY}.user.${userId}`
+}
+
+function loadUserLocalState(userId) {
+  if (!userId) return null
+  try {
+    const raw = localStorage.getItem(userStorageKey(userId))
+    return raw ? normalizeState(JSON.parse(raw)) : null
+  } catch {
+    return null
+  }
+}
+
+function saveLocalState(snapshot, userId = '') {
+  try {
+    localStorage.setItem(userId ? userStorageKey(userId) : STORAGE_KEY, JSON.stringify(snapshot))
+  } catch {
+    // Storage may be unavailable in private/restricted browser modes.
+  }
+}
+
+function getDeviceId() {
+  try {
+    const saved = localStorage.getItem(DEVICE_ID_KEY)
+    if (saved) return saved
+    const next = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `device-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    localStorage.setItem(DEVICE_ID_KEY, next)
+    return next
+  } catch {
+    return `device-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  }
+}
+
+function formatSyncTime(value) {
+  if (!value) return ''
+  try {
+    return new Date(value).toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return ''
+  }
+}
+
+function useSupabaseSync(state, setState) {
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(supabaseConfigured)
+  const [cloudReady, setCloudReady] = useState(false)
+  const [syncStatus, setSyncStatus] = useState(supabaseConfigured ? 'connecting' : 'local')
+  const [syncMessage, setSyncMessage] = useState(
+    supabaseConfigured ? '正在檢查登入狀態…' : '尚未設定 Supabase，現時只儲存在此裝置。'
+  )
+  const [lastSyncAt, setLastSyncAt] = useState('')
+  const [anonymousReady, setAnonymousReady] = useState(!supabaseConfigured)
+
+  const stateRef = useRef(state)
+  const deviceIdRef = useRef(getDeviceId())
+  const lastCloudSerializedRef = useRef('')
+  const lastRemoteAtRef = useRef('')
+  const saveTimerRef = useRef(null)
+  const activeUserId = session?.user?.id || ''
+
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
+
+  useEffect(() => {
+    if (!supabaseConfigured || !supabase) {
+      setAuthLoading(false)
+      setSyncStatus('local')
+      return undefined
+    }
+
+    let mounted = true
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return
+      if (error) {
+        setSyncStatus('error')
+        setSyncMessage(`登入狀態讀取失敗：${error.message}`)
+      }
+      setSession(data?.session || null)
+      setAuthLoading(false)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!mounted) return
+      setSession(nextSession)
+      setAuthLoading(false)
+    })
+
+    return () => {
+      mounted = false
+      listener?.subscription?.unsubscribe()
+    }
+  }, [])
+
+  async function writeCloud(snapshot, userId = activeUserId) {
+    if (!supabase || !userId) return { ok: false, error: new Error('尚未登入 Supabase') }
+    const payload = {
+      user_id: userId,
+      data: snapshot,
+      client_id: deviceIdRef.current
+    }
+    const { data, error } = await supabase
+      .from('health_snapshots')
+      .upsert(payload, { onConflict: 'user_id' })
+      .select('updated_at')
+      .single()
+
+    if (error) return { ok: false, error }
+    const confirmedAt = data?.updated_at || new Date().toISOString()
+    lastCloudSerializedRef.current = JSON.stringify(snapshot)
+    lastRemoteAtRef.current = confirmedAt
+    saveLocalState(snapshot, userId)
+    setLastSyncAt(confirmedAt)
+    setSyncStatus('synced')
+    setSyncMessage('雲端資料已同步。')
+    return { ok: true, updatedAt: confirmedAt }
+  }
+
+  async function loadCloud(userId = activeUserId, { createIfMissing = true } = {}) {
+    if (!supabase || !userId) return { ok: false, error: new Error('尚未登入 Supabase') }
+    setSyncStatus('connecting')
+    setSyncMessage('正在讀取雲端健康資料…')
+
+    const { data, error } = await supabase
+      .from('health_snapshots')
+      .select('data, updated_at, client_id')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (error) {
+      setSyncStatus('error')
+      setSyncMessage(`雲端讀取失敗：${error.message}`)
+      return { ok: false, error }
+    }
+
+    if (!data) {
+      if (!createIfMissing) {
+        setSyncStatus('synced')
+        setSyncMessage('雲端尚未有資料。')
+        return { ok: true, empty: true }
+      }
+      const initialState = stateRef.current
+      const result = await writeCloud(initialState, userId)
+      if (result.ok) {
+        saveLocalState(initialState, userId)
+        try { localStorage.removeItem(STORAGE_KEY) } catch {}
+        setSyncMessage('已把這部裝置的現有資料建立為雲端初始版本。')
+      }
+      return result
+    }
+
+    const remoteState = normalizeState(data.data)
+    lastCloudSerializedRef.current = JSON.stringify(remoteState)
+    lastRemoteAtRef.current = data.updated_at || ''
+    setLastSyncAt(data.updated_at || '')
+    setState(remoteState)
+    saveLocalState(remoteState, userId)
+    setSyncStatus('synced')
+    setSyncMessage('已載入雲端最新資料。')
+    return { ok: true, data: remoteState }
+  }
+
+  useEffect(() => {
+    if (!supabaseConfigured || !supabase || !activeUserId) {
+      setCloudReady(false)
+      if (!activeUserId && supabaseConfigured && !authLoading) {
+        const anonymousState = safeLoad()
+        stateRef.current = anonymousState
+        setState(anonymousState)
+        setAnonymousReady(true)
+        setSyncStatus('local')
+        setSyncMessage('未登入：資料會保留在此裝置；登入後可跨平台同步。')
+      }
+      return undefined
+    }
+
+    let cancelled = false
+    setAnonymousReady(false)
+    setCloudReady(false)
+
+    const cached = loadUserLocalState(activeUserId)
+    if (cached) {
+      stateRef.current = cached
+      setState(cached)
+      setSyncMessage('已載入此帳戶的本機快取，正在檢查雲端最新版本…')
+    }
+
+    loadCloud(activeUserId).then((result) => {
+      if (!cancelled && result.ok) setCloudReady(true)
+    })
+
+    return () => { cancelled = true }
+  }, [activeUserId, authLoading])
+
+  useEffect(() => {
+    if (activeUserId) saveLocalState(state, activeUserId)
+    else if (!supabaseConfigured || anonymousReady) saveLocalState(state)
+
+    if (!supabaseConfigured || !supabase || !activeUserId || !cloudReady) return undefined
+    const serialized = JSON.stringify(state)
+    if (serialized === lastCloudSerializedRef.current) return undefined
+
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
+    setSyncStatus('saving')
+    setSyncMessage('本機已儲存，正在同步到雲端…')
+    saveTimerRef.current = window.setTimeout(async () => {
+      const result = await writeCloud(state, activeUserId)
+      if (!result.ok) {
+        setSyncStatus('error')
+        setSyncMessage(`同步失敗，本機資料仍已保存：${result.error?.message || '未知錯誤'}`)
+      }
+    }, 800)
+
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
+    }
+  }, [state, activeUserId, cloudReady, anonymousReady])
+
+  useEffect(() => {
+    if (!supabaseConfigured || !supabase || !activeUserId || !cloudReady) return undefined
+
+    const channel = supabase
+      .channel(`health-sync-${activeUserId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'health_snapshots',
+          filter: `user_id=eq.${activeUserId}`
+        },
+        (payload) => {
+          const row = payload.new
+          if (!row?.data || row.client_id === deviceIdRef.current) return
+          if (lastRemoteAtRef.current && row.updated_at && row.updated_at <= lastRemoteAtRef.current) return
+
+          const remoteState = normalizeState(row.data)
+          const serialized = JSON.stringify(remoteState)
+          if (serialized === lastCloudSerializedRef.current) return
+
+          lastCloudSerializedRef.current = serialized
+          lastRemoteAtRef.current = row.updated_at || new Date().toISOString()
+          setLastSyncAt(row.updated_at || '')
+          setState(remoteState)
+          saveLocalState(remoteState, activeUserId)
+          setSyncStatus('synced')
+          setSyncMessage('已收到另一部裝置的最新資料。')
+        }
+      )
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          setSyncStatus('error')
+          setSyncMessage('即時同步連線出現問題；本機資料仍會保存。')
+        }
+      })
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [activeUserId, cloudReady])
+
+  async function signIn(email, password) {
+    if (!supabase) return { ok: false, message: '尚未設定 Supabase 環境變數。' }
+    setAuthLoading(true)
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+    setAuthLoading(false)
+    if (error) return { ok: false, message: error.message }
+    setSyncMessage('登入成功，正在載入雲端資料…')
+    return { ok: true, message: '登入成功。' }
+  }
+
+  async function signUp(email, password) {
+    if (!supabase) return { ok: false, message: '尚未設定 Supabase 環境變數。' }
+    setAuthLoading(true)
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: { emailRedirectTo: window.location.origin }
+    })
+    setAuthLoading(false)
+    if (error) return { ok: false, message: error.message }
+    if (!data?.session) {
+      return { ok: true, message: '帳戶已建立，請先到電郵完成驗證，再回來登入。' }
+    }
+    return { ok: true, message: '帳戶已建立並登入。' }
+  }
+
+  async function signOut() {
+    if (!supabase) return { ok: false }
+    setAnonymousReady(false)
+    const { error } = await supabase.auth.signOut()
+    if (error) {
+      setSyncStatus('error')
+      setSyncMessage(`登出失敗：${error.message}`)
+      return { ok: false, error }
+    }
+    setCloudReady(false)
+    setSyncStatus('local')
+    setSyncMessage('已登出；之後的變更只會保存在此裝置。')
+    return { ok: true }
+  }
+
+  async function syncNow() {
+    setSyncStatus('saving')
+    setSyncMessage('正在立即同步…')
+    const result = await writeCloud(stateRef.current)
+    if (!result.ok) {
+      setSyncStatus('error')
+      setSyncMessage(`同步失敗：${result.error?.message || '未知錯誤'}`)
+    }
+    return result
+  }
+
+  async function reloadFromCloud() {
+    return loadCloud(activeUserId, { createIfMissing: false })
+  }
+
+  return {
+    configured: supabaseConfigured,
+    session,
+    user: session?.user || null,
+    authLoading,
+    cloudReady,
+    syncStatus,
+    syncMessage,
+    lastSyncAt,
+    lastSyncLabel: formatSyncTime(lastSyncAt),
+    signIn,
+    signUp,
+    signOut,
+    syncNow,
+    reloadFromCloud
   }
 }
 
@@ -325,10 +675,7 @@ function App() {
   const [tab, setTab] = useState('home')
   const [state, setState] = useState(safeLoad)
   const [toast, setToast] = useState('')
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  }, [state])
+  const cloud = useSupabaseSync(state, setState)
 
   function update(patch) {
     setState((current) => ({ ...current, ...patch }))
@@ -340,6 +687,15 @@ function App() {
   }
 
   const completedToday = state.meds.filter((m) => (m.takenLogs || []).some((log) => log.date === todayKey())).length
+  const cloudLabel = !cloud.configured
+    ? '只儲存在本機'
+    : !cloud.user
+      ? '未登入雲端'
+      : cloud.syncStatus === 'saving'
+        ? '同步中…'
+        : cloud.syncStatus === 'error'
+          ? '同步需留意'
+          : `雲端已同步${cloud.lastSyncLabel ? ` ${cloud.lastSyncLabel}` : ''}`
 
   return (
     <div className="app-shell">
@@ -348,7 +704,13 @@ function App() {
           <p className="eyebrow">長者健康自我管理</p>
           <h1>{pageTitle(tab)}</h1>
         </div>
-        <div className="top-pill"><HeartPulse size={19} /> 今日已服藥 {completedToday}/{state.meds.length}</div>
+        <div className="top-actions">
+          <div className={`top-pill cloud-pill ${cloud.syncStatus}`}>
+            {cloud.user && cloud.syncStatus !== 'error' ? <Cloud size={18} /> : <CloudOff size={18} />}
+            {cloudLabel}
+          </div>
+          <div className="top-pill"><HeartPulse size={19} /> 今日已服藥 {completedToday}/{state.meds.length}</div>
+        </div>
       </header>
 
       {tab === 'home' && <HomePage state={state} setTab={setTab} />}
@@ -356,7 +718,7 @@ function App() {
       {tab === 'vitals' && <VitalsPage state={state} update={update} flash={flash} />}
       {tab === 'appointments' && <AppointmentsPage state={state} update={update} flash={flash} />}
       {tab === 'records' && <RecordsPage state={state} update={update} flash={flash} />}
-      {tab === 'settings' && <SettingsPage state={state} update={update} flash={flash} />}
+      {tab === 'settings' && <SettingsPage state={state} update={update} flash={flash} cloud={cloud} />}
 
       <nav className="bottom-nav">
         <NavButton active={tab === 'home'} icon={<Home size={19} />} label="首頁" onClick={() => setTab('home')} />
@@ -970,19 +1332,23 @@ function LineChartCard({ title, subtitle, data, lines, emptyText }) {
   )
 }
 
-function SettingsPage({ state, update, flash }) {
+function SettingsPage({ state, update, flash, cloud }) {
   const [profile, setProfile] = useState(state.profile)
+  useEffect(() => { setProfile(state.profile) }, [state.profile])
   function save() {
     update({ profile })
     flash('設定已儲存')
   }
   function resetDemo() {
-    if (!window.confirm('確定要重設為示範資料？現有資料會被覆蓋。')) return
-    localStorage.removeItem(STORAGE_KEY)
-    window.location.reload()
+    if (!window.confirm('確定要重設為示範資料？現有資料會被覆蓋；如已登入，重設內容亦會同步到雲端。')) return
+    const resetState = normalizeState(JSON.parse(JSON.stringify(defaultState)))
+    setProfile(resetState.profile)
+    update(resetState)
+    flash('已重設為示範資料')
   }
   return (
     <div className="page-grid">
+      <CloudSyncCard cloud={cloud} flash={flash} />
       <section className="card form-card">
         <div className="section-title"><UserRound size={20} /><h2>個人健康資料</h2></div>
         <div className="form-grid two">
@@ -1003,6 +1369,75 @@ function SettingsPage({ state, update, flash }) {
         <button className="danger-btn" onClick={resetDemo}><Trash2 size={17} />重設示範資料</button>
       </section>
     </div>
+  )
+}
+
+function CloudSyncCard({ cloud, flash }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [message, setMessage] = useState('')
+
+  async function handleAuth(mode) {
+    if (!email.trim() || password.length < 6) {
+      setMessage('請輸入有效電郵，密碼至少 6 個字元。')
+      return
+    }
+    const result = mode === 'signup'
+      ? await cloud.signUp(email, password)
+      : await cloud.signIn(email, password)
+    setMessage(result.message || '')
+    if (result.ok) flash(result.message || '完成')
+  }
+
+  if (!cloud?.configured) {
+    return (
+      <section className="card cloud-sync-card">
+        <div className="section-title"><CloudOff size={20} /><h2>Supabase 跨平台同步</h2></div>
+        <div className="status error">
+          <CloudOff size={18} />
+          尚未設定 VITE_SUPABASE_URL 及 VITE_SUPABASE_PUBLISHABLE_KEY。現有資料仍會安全保存在此瀏覽器。
+        </div>
+        <p className="hint">完成 Supabase setup.sql 及 Vercel Environment Variables 後重新部署，即會顯示登入及同步功能。</p>
+      </section>
+    )
+  }
+
+  if (!cloud.user) {
+    return (
+      <section className="card cloud-sync-card">
+        <div className="section-title"><Cloud size={20} /><h2>Supabase 跨平台同步</h2></div>
+        <p className="hint">使用同一個電郵帳戶登入手機、平板或電腦，即可共享同一份健康資料。未登入時仍可本機使用。</p>
+        <div className="auth-grid">
+          <label><span><Mail size={15} />電郵</span><input type="email" autoComplete="email" placeholder="name@example.com" value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+          <label><span><Lock size={15} />密碼</span><input type="password" autoComplete="current-password" placeholder="至少 6 個字元" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+        </div>
+        <div className="auth-actions">
+          <button className="primary-btn compact-btn" onClick={() => handleAuth('signin')} disabled={cloud.authLoading}><LogIn size={17} />{cloud.authLoading ? '處理中…' : '登入'}</button>
+          <button className="secondary-btn compact-btn" onClick={() => handleAuth('signup')} disabled={cloud.authLoading}>建立帳戶</button>
+        </div>
+        {(message || cloud.syncMessage) && <div className="cloud-message">{message || cloud.syncMessage}</div>}
+      </section>
+    )
+  }
+
+  return (
+    <section className="card cloud-sync-card">
+      <div className="cloud-account-head">
+        <div>
+          <div className="section-title"><Cloud size={20} /><h2>Supabase 跨平台同步</h2></div>
+          <strong className="cloud-email">{cloud.user.email || '已登入帳戶'}</strong>
+        </div>
+        <span className={`sync-badge ${cloud.syncStatus}`}>{cloud.syncStatus === 'saving' ? '同步中' : cloud.syncStatus === 'error' ? '需留意' : '已連線'}</span>
+      </div>
+      <p className="hint">資料修改後約 1 秒自動上載；另一部已登入裝置亦會接收更新。每個帳戶只能讀取自己的資料。</p>
+      <div className={`cloud-message ${cloud.syncStatus === 'error' ? 'is-error' : ''}`}>{cloud.syncMessage}</div>
+      {cloud.lastSyncLabel && <p className="last-sync">最後同步：{cloud.lastSyncLabel}</p>}
+      <div className="cloud-actions">
+        <button className="secondary-btn compact-btn" onClick={async () => { const r = await cloud.syncNow(); if (r?.ok) flash('已立即同步到雲端') }}><RefreshCw size={17} />立即同步</button>
+        <button className="secondary-btn compact-btn" onClick={async () => { const r = await cloud.reloadFromCloud(); if (r?.ok) flash(r.empty ? '雲端尚未有資料' : '已從雲端載入最新資料') }}>從雲端載入</button>
+        <button className="danger-btn compact-btn" onClick={cloud.signOut}><LogOut size={17} />登出</button>
+      </div>
+    </section>
   )
 }
 
