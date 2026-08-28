@@ -1,6 +1,19 @@
-# 長者健康自我管理｜Supabase 跨平台同步版 v1.2.0
+# 長者健康自我管理｜Supabase 跨平台同步版 v1.2.1
 
 此版本建基於原有完整版本，新增 **Supabase Auth + Database + Realtime**，讓同一使用者可以在手機、平板及電腦登入同一帳戶後使用同一份健康資料。
+
+## v1.2.1 Production 修正
+
+此版本已預設連接目前健康管理網站使用的 Supabase project：
+
+- Project URL：`https://jciqwdzuptvmwdmmqdaj.supabase.co`
+- 使用瀏覽器安全的 Supabase Publishable Key
+- 如 Vercel 已提供 `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY`，仍會優先使用 Vercel 的值
+- 即使 Vercel 尚未設定上述兩項，production 網站也不會再誤判為「只儲存在本機」
+- **沒有**把 `service_role` / `sb_secret_...` 放入前端；資料隔離仍由 RLS 保護
+
+部署成功後，未登入狀態應顯示 **「未登入雲端」**，到「設定」頁會見到 Supabase 電郵／密碼登入。
+
 
 ## 新增功能
 
